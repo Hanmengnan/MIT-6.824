@@ -11,16 +11,16 @@ import (
 )
 
 type Coordinator struct {
-	MapJobs            chan string
-	MapJobID           chan int
-	MapJobCount        int
-	MapJobState        map[string]bool
-	MapJobStateLock    sync.Mutex
-	ReduceJobs         chan int
-	ReduceJobState     map[int]bool
-	ReduceJobStateLock sync.Mutex
-	Over               bool
-	OverLock           sync.Mutex
+	MapJobs            chan string     // map任务管道
+	MapJobID           chan int        // map任务id
+	MapJobCount        int             // map任务数
+	MapJobState        map[string]bool // map任务状态`map`
+	MapJobStateLock    sync.Mutex      // map任务状态锁
+	ReduceJobs         chan int        // reduce任务管道
+	ReduceJobState     map[int]bool    // reduce任务状态map
+	ReduceJobStateLock sync.Mutex      // reduce任务状态锁
+	Over               bool            // mr任务结束标志
+	OverLock           sync.Mutex      // mr任务状态锁
 }
 
 func (c *Coordinator) MapJobNum(args *MapNumArgs, reply *MapNumReply) error {
@@ -32,7 +32,8 @@ func (c *Coordinator) MapJob(args *MapJobArgs, reply *MapJobReply) error {
 	select {
 	case reply.File = <-c.MapJobs:
 		reply.MapJobID = <-c.MapJobID
-		go func(jobFile string, jobID int) { //开启一个协程等待10s判断任务是否完成
+		go func(jobFile string, jobID int) {
+			//开启一个协程等待10s判断任务是否完成
 			time.Sleep(time.Second * 10)
 			c.MapJobStateLock.Lock()
 			if !c.MapJobState[jobFile] {
@@ -50,32 +51,31 @@ func (c *Coordinator) MapJob(args *MapJobArgs, reply *MapJobReply) error {
 
 func (c *Coordinator) MapJobDone(args *MapJobDoneArgs, reply *MapJobDoneReply) error {
 	if args.Content == "single" {
+		// 通知单个任务结束
 		c.MapJobStateLock.Lock()
 		c.MapJobState[args.FileName] = true
 		c.MapJobStateLock.Unlock()
 	} else if args.Content == "all" {
-		flag := true
+		// 查询全部任务是否结束
+		reply.Done = true
 		c.MapJobStateLock.Lock()
 		for _, value := range c.MapJobState {
+			// 存在未完成map任务
 			if !value {
-				flag = false
+				reply.Done = false
+				break
 			}
 		}
 		c.MapJobStateLock.Unlock()
-		if flag {
-			reply.Done = true
-		} else {
-			reply.Done = false
-		}
 	}
-
 	return nil
 }
 
 func (c *Coordinator) ReduceJob(args *ReduceArgs, reply *ReduceReply) error {
 	select {
 	case reply.ReduceJobID = <-c.ReduceJobs:
-		go func(jobID int) { //同map
+		go func(jobID int) { 
+			//同map
 			time.Sleep(time.Second * 10)
 			c.ReduceJobStateLock.Lock()
 			if !c.ReduceJobState[jobID] {
@@ -93,6 +93,13 @@ func (c *Coordinator) ReduceJobDone(args *ReduceJobDoneArgs, reply *ReduceJobDon
 	c.ReduceJobStateLock.Lock()
 	c.ReduceJobState[args.JobID] = true
 	c.ReduceJobStateLock.Unlock()
+	return nil
+}
+
+func (c *Coordinator) MROver(args *MROverArgs, reply *MROverReply) error {
+	c.OverLock.Lock()
+	reply.Done = c.Over
+	c.OverLock.Unlock()
 	return nil
 }
 
@@ -132,13 +139,6 @@ func (c *Coordinator) Done() bool {
 
 }
 
-func (c *Coordinator) MROver(args *MROverArgs, reply *MROverReply) error {
-	c.OverLock.Lock()
-	reply.Done = c.Over
-	c.OverLock.Unlock()
-	return nil
-}
-
 //
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
@@ -147,24 +147,22 @@ func (c *Coordinator) MROver(args *MROverArgs, reply *MROverReply) error {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
-	// Your code here.
 	c.MapJobs = make(chan string, len(files))
 	c.MapJobID = make(chan int, len(files))
 	c.MapJobCount = len(files)
 	c.MapJobState = make(map[string]bool)
-
 	for index, file := range files {
 		c.MapJobs <- file
 		c.MapJobID <- index
 		c.MapJobState[file] = false
 	}
-
 	c.ReduceJobs = make(chan int, nReduce)
 	c.ReduceJobState = make(map[int]bool)
 	for i := 0; i < nReduce; i++ {
 		c.ReduceJobs <- i
 		c.ReduceJobState[i] = false
 	}
+	// 初始化 coordinator
 
 	c.server()
 	return &c

@@ -43,25 +43,33 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// map 阶段
-	mapJobNum := getMapNum() // map任务数，同时也是文件数
+	mapJobNum := getMapNum()
+	// map任务数，同时也是文件数
 	for {
-		mapFile, mapJobID := getMapJob() // map任务所对应的文件名以及任务ID
-		if mapFile != "" {               // 代表还有任务待分配
+		mapFile, mapJobID := getMapJob()
+		// map任务所对应的文件名以及任务ID
+		if mapFile != "" {
+			// 代表还有任务待分配
 			file, err := os.Open(mapFile)
 			if err != nil {
 				log.Fatalf("cannot open %v", mapFile)
 			}
-			content, err := ioutil.ReadAll(file) // 读取文件内容
+			content, err := ioutil.ReadAll(file)
+			// 读取文件内容
 			if err != nil {
 				log.Fatalf("cannot read %v", mapFile)
 			}
 			file.Close()
-			kva := mapf(mapFile, string(content)) // map操作
-			shuffle(mapJobID, kva)                // 将map任务的结果写入临时文件
-			getMapJobDone("single", mapFile)      // 通知调度器一个map任务已完成
+			kva := mapf(mapFile, string(content))
+			// map操作
+			shuffle(mapJobID, kva)
+			// 将map任务的结果写入临时文件
+			getMapJobDone("single", mapFile)
+			// 通知调度器一个map任务已完成
 
 		} else {
-			if getMapJobDone("all", "") { //判断是否全部map任务已结束
+			if getMapJobDone("all", "") {
+				//判断是否全部map任务已结束
 				break
 			}
 			time.Sleep(time.Second)
@@ -70,34 +78,44 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// reduce 阶段
 	for {
-		reduceJobID := getReduceJob() // 获取reduce任务ID
+		reduceJobID := getReduceJob()
+		// 获取reduce任务ID
 		if reduceJobID != -1 {
 			kva := make([]KeyValue, 0)
 			for j := 0; j < mapJobNum; j++ {
 				fileName := fmt.Sprintf("mr-%d-%d", j, reduceJobID)
+				// 该reduce任务对应的中间文件名
 				file, err := os.Open(fileName)
 				if err != nil {
 					log.Fatalf("cannot open %v", fileName)
 				}
 				dec := json.NewDecoder(file)
+				// 读取文件内容
 				for {
 					var kv KeyValue
 					if err := dec.Decode(&kv); err != nil {
 						break
 					}
 					kva = append(kva, kv)
+					// 保存结果
 				}
 			}
-			storeReduceRes(reduceJobID, kva, reducef) // reduce 操作
-			getReduceJobDone(reduceJobID)             // 通知调度器一个reduce任务已完成
+			storeReduceRes(reduceJobID, kva, reducef)
+			// reduce 操作
+			getReduceJobDone(reduceJobID)
+			// 通知调度器一个reduce任务已完成
 		} else {
-			if getMROver() { // 判断是否全部任务已完成
+			if getMROver() {
+				// 判断是否全部任务已完成
 				break
 			}
 		}
 	}
 }
 
+//
+//获取map任务数量
+//
 func getMapNum() int {
 	args := MapNumArgs{}
 	reply := MapNumReply{}
@@ -106,6 +124,9 @@ func getMapNum() int {
 
 }
 
+//
+// 获取新的map任务
+//
 func getMapJob() (string, int) {
 	args := MapJobArgs{}
 	reply := MapJobReply{}
@@ -113,13 +134,23 @@ func getMapJob() (string, int) {
 	return reply.File, reply.MapJobID
 }
 
+//
+// 通知 coordinator map任务已经完成
+//
+// content:
+// `single`: 通知单个任务已经完成 \ `all`: 询问全部任务是否已经完成
+//
 func getMapJobDone(content, fileName string) bool {
+
 	args := MapJobDoneArgs{Content: content, FileName: fileName}
 	reply := MapJobDoneReply{}
 	call("Coordinator.MapJobDone", &args, &reply)
 	return reply.Done
 }
 
+// 
+// 将map的结果保存至中间文件
+//
 func shuffle(mapJobID int, intermediate []KeyValue) {
 	interFiles := make([]*os.File, 10)
 	for i := 0; i < 10; i++ {
@@ -129,11 +160,15 @@ func shuffle(mapJobID int, intermediate []KeyValue) {
 	}
 	for _, kv := range intermediate {
 		reduceJobID := ihash(kv.Key) % 10
+		// 确定对应的reduce任务
 		enc := json.NewEncoder(interFiles[reduceJobID])
 		enc.Encode(&kv)
 	}
 }
 
+// 
+// 获取reduce
+//
 func getReduceJob() int {
 	args := ReduceArgs{}
 	reply := ReduceReply{}
@@ -141,6 +176,9 @@ func getReduceJob() int {
 	return reply.ReduceJobID
 }
 
+//
+// 将reduce任务执行结果保存在最终的文件中
+//
 func storeReduceRes(reduceJobID int, intermediate []KeyValue, reducef func(string, []string) string) {
 	fileName := fmt.Sprintf("mr-out-%d", reduceJobID)
 	ofile, _ := os.Create(fileName)
@@ -157,20 +195,25 @@ func storeReduceRes(reduceJobID int, intermediate []KeyValue, reducef func(strin
 			values = append(values, intermediate[k].Value)
 		}
 		output := reducef(intermediate[i].Key, values)
+		// reduce 操作
 
-		// this is the correct format for each line of Reduce output.
 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-
 		i = j
 	}
 }
 
+//
+// 通知某个reduce任务完成
+//
 func getReduceJobDone(jobID int) {
 	args := ReduceJobDoneArgs{JobID: jobID}
 	reply := ReduceJobDoneReply{}
 	call("Coordinator.ReduceJobDone", &args, &reply)
 }
 
+//
+// 询问是否全部map-reduce任务完成
+//
 func getMROver() bool {
 	args := MROverArgs{}
 	reply := MROverReply{}
